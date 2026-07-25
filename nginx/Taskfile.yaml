@@ -1,0 +1,167 @@
+version: "3"
+
+# ===========================================================================
+# Image-level Taskfile: aggregates all version directories
+# Dynamically discovers version subdirectories (those with both
+# Taskfile.yaml and flake.nix, excluding tests/).
+#
+# LATEST_VERSION is auto-detected as the highest version directory
+# (by sort -V). The latest version gets --latest flag for tagging.
+# ===========================================================================
+
+vars:
+  IMAGE:
+    sh: basename "$(pwd)"
+  # Auto-detect the latest (highest) version directory
+  LATEST_VERSION:
+    sh: |
+      for dir in */; do
+        if [ -f "${dir}Taskfile.yaml" ] && [ -f "${dir}flake.nix" ]; then
+          echo "${dir%/}"
+        fi
+      done | sort -V | tail -1
+
+tasks:
+  default:
+    desc: Show available tasks
+    cmds:
+      - task --list
+
+  check-all:
+    desc: Check all versions
+    cmds:
+      - |
+        for dir in */; do
+          if [ -f "${dir}Taskfile.yaml" ] && [ -f "${dir}flake.nix" ]; then
+            echo "[*] Checking ${dir%/}..."
+            task -d "$dir" check || exit 1
+          fi
+        done
+
+  build-all:
+    desc: Build all versions (latest gets --latest tag)
+    cmds:
+      - |
+        for dir in */; do
+          if [ -f "${dir}Taskfile.yaml" ] && [ -f "${dir}flake.nix" ]; then
+            ver="${dir%/}"
+            FLAG=""
+            if [ "$ver" = "{{.LATEST_VERSION}}" ]; then
+              FLAG="--latest"
+              echo "[*] Building $ver (latest)..."
+            else
+              echo "[*] Building $ver..."
+            fi
+            task -d "$dir" build LATEST_FLAG="$FLAG" || exit 1
+          fi
+        done
+
+  publish-all:
+    desc: Publish all versions (latest gets --latest tag)
+    cmds:
+      - |
+        for dir in */; do
+          if [ -f "${dir}Taskfile.yaml" ] && [ -f "${dir}flake.nix" ]; then
+            ver="${dir%/}"
+            FLAG=""
+            if [ "$ver" = "{{.LATEST_VERSION}}" ]; then
+              FLAG="--latest"
+              echo "[*] Publishing $ver (latest)..."
+            else
+              echo "[*] Publishing $ver..."
+            fi
+            task -d "$dir" publish LATEST_FLAG="$FLAG" || exit 1
+          fi
+        done
+
+  sign-all:
+    desc: Sign all versions (latest gets --latest tag)
+    cmds:
+      - |
+        for dir in */; do
+          if [ -f "${dir}Taskfile.yaml" ] && [ -f "${dir}flake.nix" ]; then
+            ver="${dir%/}"
+            FLAG=""
+            if [ "$ver" = "{{.LATEST_VERSION}}" ]; then
+              FLAG="--latest"
+              echo "[*] Signing $ver (latest)..."
+            else
+              echo "[*] Signing $ver..."
+            fi
+            task -d "$dir" sign LATEST_FLAG="$FLAG" || exit 1
+          fi
+        done
+
+  verify-all:
+    desc: Verify all versions
+    cmds:
+      - |
+        for dir in */; do
+          if [ -f "${dir}Taskfile.yaml" ] && [ -f "${dir}flake.nix" ]; then
+            echo "[*] Verifying ${dir%/}..."
+            task -d "$dir" verify || exit 1
+          fi
+        done
+
+  release-all:
+    desc: "Release all versions: build, publish, sign (latest gets --latest tag)"
+    cmds:
+      - |
+        for dir in */; do
+          if [ -f "${dir}Taskfile.yaml" ] && [ -f "${dir}flake.nix" ]; then
+            ver="${dir%/}"
+            FLAG=""
+            if [ "$ver" = "{{.LATEST_VERSION}}" ]; then
+              FLAG="--latest"
+              echo "[*] Releasing $ver (latest)..."
+            else
+              echo "[*] Releasing $ver..."
+            fi
+            task -d "$dir" build LATEST_FLAG="$FLAG" || exit 1
+            task -d "$dir" publish LATEST_FLAG="$FLAG" || exit 1
+            task -d "$dir" sign LATEST_FLAG="$FLAG" || exit 1
+          fi
+        done
+
+  scan-all:
+    desc: Scan all versions (baseline + tiers + compare)
+    cmds:
+      - |
+        failed=""
+        for dir in */; do
+          if [ -f "${dir}Taskfile.yaml" ] && [ -f "${dir}flake.nix" ]; then
+            ver="${dir%/}"
+            echo "[*] Scanning $ver..."
+            if task -d "$dir" scan; then
+              echo "[+] $ver done"
+            else
+              echo "[-] $ver FAILED"
+              failed="$failed $ver"
+            fi
+          fi
+        done
+        if [ -n "$failed" ]; then
+          echo "[-] Failed versions:$failed"
+          exit 1
+        fi
+
+  clean-reports-all:
+    desc: Remove all raw reports, SBOMs, and website scan data
+    cmds:
+      - |
+        for dir in */; do
+          if [ -f "${dir}Taskfile.yaml" ] && [ -f "${dir}flake.nix" ]; then
+            task -d "$dir" clean-reports || exit 1
+          fi
+        done
+
+  scan-baseline-all:
+    desc: Scan upstream baseline for all versions
+    cmds:
+      - |
+        for dir in */; do
+          if [ -f "${dir}Taskfile.yaml" ] && [ -f "${dir}flake.nix" ]; then
+            echo "[*] Scanning baseline ${dir%/}..."
+            task -d "$dir" scan-baseline || exit 1
+          fi
+        done

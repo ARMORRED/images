@@ -1,0 +1,88 @@
+name: PoC - GitHub build round-trip (nginx)
+
+# Architecture/PoC phase only (see images/docs/60-ci-cve-architecture.org).
+# Validates: Nix build on GitHub-hosted runner, Cachix push/pull to the
+# dedicated `armorred` cache, and push to DockerHub + GHCR. Tags are
+# clearly marked `poc-*` so they never collide with real release tags.
+
+on:
+  push:
+    branches:
+      - "poc/github-ci-nginx"
+  workflow_dispatch:
+
+env:
+  REGISTRY_DOCKERHUB: docker.io
+  REGISTRY_GHCR: ghcr.io
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Nix
+        uses: cachix/install-nix-action@v27
+        with:
+          nix_path: nixpkgs=channel:nixos-24.05
+
+      - name: Set up Cachix (armorred cache)
+        uses: cachix/cachix-action@v14
+        with:
+          name: armorred
+          authToken: "${{ secrets.CACHIX_AUTH_TOKEN }}"
+
+      - name: Build nginx hardened tier
+        run: |
+          nix build ./nginx/1.28#default --out-link result-poc
+          echo "[+] Built: $(readlink -f result-poc)"
+
+      - name: Load image into podman
+        run: |
+          nix shell nixpkgs#podman --command podman load < result-poc
+
+      - name: Log in to DockerHub
+        run: |
+          nix shell nixpkgs#podman --command podman login docker.io \
+            -u "${{ secrets.DOCKERHUB_USERNAME }}" \
+            -p "${{ secrets.DOCKERHUB_TOKEN }}"
+
+      - name: Log in to GHCR
+        run: |
+          nix shell nixpkgs#podman --command podman login ghcr.io \
+            -u "${{ github.actor }}" \
+            -p "${{ secrets.GITHUB_TOKEN }}"
+
+      - name: Tag and push PoC image
+        run: |
+          nix shell nixpkgs#podman --command bash -c '
+            set -euo pipefail
+            SRC="armorred/nginx:hardened"
+            podman tag "$SRC" "${{ env.REGISTRY_DOCKERHUB }}/armorred/nginx:poc-cachix-test"
+            podman tag "$SRC" "${{ env.REGISTRY_GHCR }}/armorred/nginx:poc-cachix-test"
+            podman push "${{ env.REGISTRY_DOCKERHUB }}/armorred/nginx:poc-cachix-test"
+            podman push "${{ env.REGISTRY_GHCR }}/armorred/nginx:poc-cachix-test"
+          '
+
+      - name: Verify pulled-back image runs
+        run: |
+          nix shell nixpkgs#podman --command bash -c '
+            set -euo pipefail
+            podman rmi -f armorred/nginx:hardened || true
+            podman pull "${{ env.REGISTRY_GHCR }}/armorred/nginx:poc-cachix-test"
+            podman run --rm "${{ env.REGISTRY_GHCR }}/armorred/nginx:poc-cachix-test" nginx -v
+          '
+
+      - name: Summary
+        run: |
+          echo "## PoC 1 result: GitHub build round-trip" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Nix build on GitHub-hosted runner: OK" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Cachix push to armorred cache: see cachix-action logs above" >> "$GITHUB_STEP_SUMMARY"
+          echo "- DockerHub push: docker.io/armorred/nginx:poc-cachix-test" >> "$GITHUB_STEP_SUMMARY"
+          echo "- GHCR push: ghcr.io/armorred/nginx:poc-cachix-test" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Pulled-back image runs: OK" >> "$GITHUB_STEP_SUMMARY"

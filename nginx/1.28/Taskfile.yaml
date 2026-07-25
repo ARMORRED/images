@@ -1,0 +1,205 @@
+version: "3"
+
+vars:
+  # Derived from directory structure: <image>/<version_line>/
+  IMAGE:
+    sh: basename "$(dirname "$(pwd)")"
+  VERSION_LINE:
+    sh: basename "$(pwd)"
+  REPO_ROOT:
+    sh: cd ../.. && pwd
+  WEBSITE_ROOT:
+    sh: cd ../../../website && pwd 2>/dev/null || echo ""
+  LIFECYCLE: nix develop {{.REPO_ROOT}} --command bash {{.REPO_ROOT}}/scripts/image-lifecycle.sh
+  SCAN_OCI: "{{.HOME}}/src/scanners/scan-oci.py"
+  MERGE: "{{.REPO_ROOT}}/scripts/merge-scan-reports.py"
+  REPORT_DIR: "{{.REPO_ROOT}}/reports/{{.IMAGE}}/{{.VERSION_LINE}}"
+  SBOM_DIR: "{{.REPO_ROOT}}/sboms/{{.IMAGE}}/{{.VERSION_LINE}}"
+  LATEST_FLAG: '{{default "" .LATEST_FLAG}}'
+  # Per-image metadata from parent scan.env
+  UPSTREAM_IMAGE:
+    sh: . ../scan.env 2>/dev/null && echo "$UPSTREAM_IMAGE" || echo "docker.io/library/$(basename "$(dirname "$(pwd)")"):{tag}"
+  MAIN_BINARY:
+    sh: . ../scan.env 2>/dev/null && echo "$MAIN_BINARY" | sed "s/{version_line}/$(basename $(pwd))/g" || echo ""
+  NIX_BINARY:
+    sh: . ../scan.env 2>/dev/null && echo "$NIX_BINARY" || echo ""
+  CATEGORY:
+    sh: . ../scan.env 2>/dev/null && echo "$CATEGORY" || echo "Uncategorized"
+  DESCRIPTION:
+    sh: . ../scan.env 2>/dev/null && echo "$DESCRIPTION" || echo ""
+
+tasks:
+  default:
+    desc: Show available tasks
+    cmds:
+      - task --list
+
+  # ===========================================================================
+  # Build lifecycle
+  # ===========================================================================
+
+  check:
+    desc: Run nix flake check
+    cmds:
+      - "{{.LIFECYCLE}} check {{.IMAGE}} {{.VERSION_LINE}}"
+    dir: "{{.REPO_ROOT}}"
+
+  build:
+    desc: Build hardened + locked images
+    cmds:
+      - "{{.LIFECYCLE}} build {{.IMAGE}} {{.VERSION_LINE}} {{.LATEST_FLAG}}"
+    dir: "{{.REPO_ROOT}}"
+
+  publish:
+    desc: Push images to registries
+    cmds:
+      - "{{.LIFECYCLE}} publish {{.IMAGE}} {{.VERSION_LINE}} {{.LATEST_FLAG}}"
+    dir: "{{.REPO_ROOT}}"
+
+  sign:
+    desc: Sign images with cosign
+    cmds:
+      - "{{.LIFECYCLE}} sign {{.IMAGE}} {{.VERSION_LINE}} {{.LATEST_FLAG}}"
+    dir: "{{.REPO_ROOT}}"
+
+  verify:
+    desc: Verify cosign signatures
+    cmds:
+      - "{{.LIFECYCLE}} verify {{.IMAGE}} {{.VERSION_LINE}} {{.LATEST_FLAG}}"
+    dir: "{{.REPO_ROOT}}"
+
+  release:
+    desc: "Full release: build, publish, sign"
+    cmds:
+      - task: build
+      - task: publish
+      - task: sign
+
+  # ===========================================================================
+  # Scanning
+  # ===========================================================================
+
+  clean-reports:
+    desc: Remove raw reports, SBOMs, and website scan data for this version
+    cmds:
+      - |
+        echo "[*] Cleaning reports for {{.IMAGE}}/{{.VERSION_LINE}}..."
+        rm -rf "{{.REPORT_DIR}}"
+        rm -rf "{{.SBOM_DIR}}"
+        if [ -n "{{.WEBSITE_ROOT}}" ]; then
+          rm -rf "{{.WEBSITE_ROOT}}/data/scans/{{.IMAGE}}/{{.VERSION_LINE}}"
+        fi
+        echo "[+] Clean: {{.IMAGE}}/{{.VERSION_LINE}}"
+
+  scan-baseline:
+    desc: Scan upstream baseline image
+    vars:
+      FULL_VERSION:
+        sh: nix eval "{{.REPO_ROOT}}/{{.IMAGE}}/{{.VERSION_LINE}}#version" --raw 2>/dev/null
+      UPSTREAM_REF:
+        sh: echo '{{.UPSTREAM_IMAGE}}' | sed "s/{tag}/$(nix eval '{{.REPO_ROOT}}/{{.IMAGE}}/{{.VERSION_LINE}}#version' --raw 2>/dev/null)/g"
+    cmds:
+      - mkdir -p "{{.REPORT_DIR}}" "{{.SBOM_DIR}}"
+      - |
+        echo "[*] Scanning upstream: {{.UPSTREAM_REF}}"
+        ARGS=("{{.UPSTREAM_REF}}")
+        if [ -n "{{.MAIN_BINARY}}" ]; then
+          ARGS+=(--main-binary "{{.MAIN_BINARY}}")
+        fi
+        ARGS+=(--report-json "{{.REPORT_DIR}}/upstream.json")
+        ARGS+=(--save-sbom "{{.SBOM_DIR}}/{{.FULL_VERSION}}-upstream.cdx.json")
+        {{.SCAN_OCI}} "${ARGS[@]}"
+        echo "[+] Baseline: {{.REPORT_DIR}}/upstream.json"
+    dir: "{{.REPO_ROOT}}"
+    preconditions:
+      - sh: test -f "{{.SCAN_OCI}}"
+        msg: "scan-oci.py not found at {{.SCAN_OCI}}"
+
+  scan-hardened:
+    desc: Scan hardened tier (builds OCI archive via nix)
+    vars:
+      FULL_VERSION:
+        sh: nix eval "{{.REPO_ROOT}}/{{.IMAGE}}/{{.VERSION_LINE}}#version" --raw 2>/dev/null
+    cmds:
+      - mkdir -p "{{.REPORT_DIR}}" "{{.SBOM_DIR}}"
+      - |
+        echo "[*] Building hardened for scan..."
+        nix build "./{{.IMAGE}}/{{.VERSION_LINE}}#default" --out-link result-scan-hardened
+        echo "[*] Scanning hardened tier..."
+        ARGS=(result-scan-hardened --oci-archive)
+        if [ -n "{{.NIX_BINARY}}" ]; then
+          ARGS+=(--main-binary "{{.NIX_BINARY}}")
+        fi
+        ARGS+=(--report-json "{{.REPORT_DIR}}/hardened.json")
+        ARGS+=(--save-sbom "{{.SBOM_DIR}}/{{.FULL_VERSION}}-hardened.cdx.json")
+        {{.SCAN_OCI}} "${ARGS[@]}"
+        rm -f result-scan-hardened
+        echo "[+] Hardened: {{.REPORT_DIR}}/hardened.json"
+    dir: "{{.REPO_ROOT}}"
+    preconditions:
+      - sh: test -f "{{.SCAN_OCI}}"
+        msg: "scan-oci.py not found at {{.SCAN_OCI}}"
+
+  scan-locked:
+    desc: Scan locked tier (builds OCI archive via nix)
+    vars:
+      FULL_VERSION:
+        sh: nix eval "{{.REPO_ROOT}}/{{.IMAGE}}/{{.VERSION_LINE}}#version" --raw 2>/dev/null
+    cmds:
+      - mkdir -p "{{.REPORT_DIR}}" "{{.SBOM_DIR}}"
+      - |
+        echo "[*] Building locked for scan..."
+        nix build "./{{.IMAGE}}/{{.VERSION_LINE}}#\"{{.FULL_VERSION}}-locked\"" --out-link result-scan-locked
+        echo "[*] Scanning locked tier..."
+        ARGS=(result-scan-locked --oci-archive)
+        if [ -n "{{.NIX_BINARY}}" ]; then
+          ARGS+=(--main-binary "{{.NIX_BINARY}}")
+        fi
+        ARGS+=(--report-json "{{.REPORT_DIR}}/locked.json")
+        ARGS+=(--save-sbom "{{.SBOM_DIR}}/{{.FULL_VERSION}}-locked.cdx.json")
+        {{.SCAN_OCI}} "${ARGS[@]}"
+        rm -f result-scan-locked
+        echo "[+] Locked: {{.REPORT_DIR}}/locked.json"
+    dir: "{{.REPO_ROOT}}"
+    preconditions:
+      - sh: test -f "{{.SCAN_OCI}}"
+        msg: "scan-oci.py not found at {{.SCAN_OCI}}"
+
+  scan-compare:
+    desc: Merge raw reports into website format
+    vars:
+      FULL_VERSION:
+        sh: nix eval "{{.REPO_ROOT}}/{{.IMAGE}}/{{.VERSION_LINE}}#version" --raw 2>/dev/null
+      UPSTREAM_REF:
+        sh: echo '{{.UPSTREAM_IMAGE}}' | sed "s/{tag}/$(nix eval '{{.REPO_ROOT}}/{{.IMAGE}}/{{.VERSION_LINE}}#version' --raw 2>/dev/null)/g"
+    cmds:
+      - |
+        {{.MERGE}} {{.IMAGE}} {{.VERSION_LINE}} {{.FULL_VERSION}} \
+          --upstream "{{.REPORT_DIR}}/upstream.json" \
+          --hardened "{{.REPORT_DIR}}/hardened.json" \
+          --locked "{{.REPORT_DIR}}/locked.json" \
+          --output-dir "{{.WEBSITE_ROOT}}/data/scans" \
+          --content-dir "{{.WEBSITE_ROOT}}/content" \
+          --registry "ghcr.io/armorred/{{.IMAGE}}" \
+          --category "{{.CATEGORY}}" \
+          --description "{{.DESCRIPTION}}" \
+          --upstream-ref "{{.UPSTREAM_REF}}"
+    dir: "{{.REPO_ROOT}}"
+    preconditions:
+      - sh: test -n "{{.WEBSITE_ROOT}}"
+        msg: "Website root not found at ../../../website"
+      - sh: test -f "{{.REPORT_DIR}}/upstream.json"
+        msg: "Run scan-baseline first"
+      - sh: test -f "{{.REPORT_DIR}}/hardened.json"
+        msg: "Run scan-hardened first"
+      - sh: test -f "{{.REPORT_DIR}}/locked.json"
+        msg: "Run scan-locked first"
+
+  scan:
+    desc: "Full scan pipeline: clean + baseline + hardened + locked + compare"
+    cmds:
+      - task: clean-reports
+      - task: scan-baseline
+      - task: scan-hardened
+      - task: scan-locked
+      - task: scan-compare
