@@ -35,6 +35,7 @@ jobs:
         with:
           name: armorred
           authToken: "${{ secrets.CACHIX_AUTH_TOKEN }}"
+          signingKey: "${{ secrets.CACHIX_SIGNING_KEY }}"
 
       - name: Build nginx hardened tier
         id: build
