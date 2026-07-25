@@ -37,9 +37,13 @@ jobs:
           authToken: "${{ secrets.CACHIX_AUTH_TOKEN }}"
 
       - name: Build nginx hardened tier
+        id: build
         run: |
           nix build ./nginx/1.28#default --out-link result-poc
           echo "[+] Built: $(readlink -f result-poc)"
+          VERSION=$(nix eval ./nginx/1.28#version --raw)
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "[+] Version: $VERSION"
 
       - name: Load image into podman
         run: |
@@ -48,6 +52,8 @@ jobs:
           # newgidmap helpers needed for rootless mode outside NixOS.
           podman --version
           podman load < result-poc
+          echo "[*] Loaded images:"
+          podman images
 
       - name: Log in to DockerHub
         run: |
@@ -64,7 +70,7 @@ jobs:
       - name: Tag and push PoC image
         run: |
           set -euo pipefail
-          SRC="armorred/nginx:hardened"
+          SRC="nginx:${{ steps.build.outputs.version }}-hardened"
           podman tag "$SRC" "${{ env.REGISTRY_DOCKERHUB }}/armorred/nginx:poc-cachix-test"
           podman tag "$SRC" "${{ env.REGISTRY_GHCR }}/armorred/nginx:poc-cachix-test"
           podman push "${{ env.REGISTRY_DOCKERHUB }}/armorred/nginx:poc-cachix-test"
@@ -73,7 +79,7 @@ jobs:
       - name: Verify pulled-back image runs
         run: |
           set -euo pipefail
-          podman rmi -f armorred/nginx:hardened || true
+          podman rmi -f "nginx:${{ steps.build.outputs.version }}-hardened" || true
           podman pull "${{ env.REGISTRY_GHCR }}/armorred/nginx:poc-cachix-test"
           podman run --rm "${{ env.REGISTRY_GHCR }}/armorred/nginx:poc-cachix-test" nginx -v
 
