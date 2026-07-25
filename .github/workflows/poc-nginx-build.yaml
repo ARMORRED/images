@@ -88,7 +88,7 @@ jobs:
           set -euo pipefail
           podman rmi -f "nginx:${{ steps.build.outputs.version }}-hardened" || true
           podman pull "${{ env.REGISTRY_DOCKERHUB }}/armorred/nginx:poc-cachix-test"
-          podman run --rm "${{ env.REGISTRY_DOCKERHUB }}/armorred/nginx:poc-cachix-test" nginx -v
+          podman run --rm "${{ env.REGISTRY_DOCKERHUB }}/armorred/nginx:poc-cachix-test" -v
 
       - name: Summary
         run: |
