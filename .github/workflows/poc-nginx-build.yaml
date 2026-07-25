@@ -67,21 +67,28 @@ jobs:
             -u "${{ github.actor }}" \
             -p "${{ secrets.GITHUB_TOKEN }}"
 
-      - name: Tag and push PoC image
+      - name: Tag and push to DockerHub
         run: |
           set -euo pipefail
           SRC="nginx:${{ steps.build.outputs.version }}-hardened"
           podman tag "$SRC" "${{ env.REGISTRY_DOCKERHUB }}/armorred/nginx:poc-cachix-test"
-          podman tag "$SRC" "${{ env.REGISTRY_GHCR }}/armorred/nginx:poc-cachix-test"
           podman push "${{ env.REGISTRY_DOCKERHUB }}/armorred/nginx:poc-cachix-test"
+
+      - name: Tag and push to GHCR (best-effort)
+        id: ghcr_push
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          SRC="nginx:${{ steps.build.outputs.version }}-hardened"
+          podman tag "$SRC" "${{ env.REGISTRY_GHCR }}/armorred/nginx:poc-cachix-test"
           podman push "${{ env.REGISTRY_GHCR }}/armorred/nginx:poc-cachix-test"
 
-      - name: Verify pulled-back image runs
+      - name: Verify pulled-back image runs (DockerHub)
         run: |
           set -euo pipefail
           podman rmi -f "nginx:${{ steps.build.outputs.version }}-hardened" || true
-          podman pull "${{ env.REGISTRY_GHCR }}/armorred/nginx:poc-cachix-test"
-          podman run --rm "${{ env.REGISTRY_GHCR }}/armorred/nginx:poc-cachix-test" nginx -v
+          podman pull "${{ env.REGISTRY_DOCKERHUB }}/armorred/nginx:poc-cachix-test"
+          podman run --rm "${{ env.REGISTRY_DOCKERHUB }}/armorred/nginx:poc-cachix-test" nginx -v
 
       - name: Summary
         run: |
@@ -89,6 +96,5 @@ jobs:
           echo "" >> "$GITHUB_STEP_SUMMARY"
           echo "- Nix build on GitHub-hosted runner: OK" >> "$GITHUB_STEP_SUMMARY"
           echo "- Cachix push to armorred cache: see cachix-action logs above" >> "$GITHUB_STEP_SUMMARY"
-          echo "- DockerHub push: docker.io/armorred/nginx:poc-cachix-test" >> "$GITHUB_STEP_SUMMARY"
-          echo "- GHCR push: ghcr.io/armorred/nginx:poc-cachix-test" >> "$GITHUB_STEP_SUMMARY"
-          echo "- Pulled-back image runs: OK" >> "$GITHUB_STEP_SUMMARY"
+          echo "- DockerHub push + pull-back + run: OK" >> "$GITHUB_STEP_SUMMARY"
+          echo "- GHCR push: ${{ steps.ghcr_push.outcome }} (existing orphaned package needs manual Actions-access grant)" >> "$GITHUB_STEP_SUMMARY"
