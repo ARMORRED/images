@@ -43,39 +43,39 @@ jobs:
 
       - name: Load image into podman
         run: |
-          nix shell nixpkgs#podman --command podman load < result-poc
+          # Use the runner's system podman (ships on ubuntu-latest), not a
+          # Nix-supplied one -- Nix's podman lacks the setuid newuidmap/
+          # newgidmap helpers needed for rootless mode outside NixOS.
+          podman --version
+          podman load < result-poc
 
       - name: Log in to DockerHub
         run: |
-          nix shell nixpkgs#podman --command podman login docker.io \
+          podman login docker.io \
             -u "${{ secrets.DOCKERHUB_USERNAME }}" \
             -p "${{ secrets.DOCKERHUB_TOKEN }}"
 
       - name: Log in to GHCR
         run: |
-          nix shell nixpkgs#podman --command podman login ghcr.io \
+          podman login ghcr.io \
             -u "${{ github.actor }}" \
             -p "${{ secrets.GITHUB_TOKEN }}"
 
       - name: Tag and push PoC image
         run: |
-          nix shell nixpkgs#podman --command bash -c '
-            set -euo pipefail
-            SRC="armorred/nginx:hardened"
-            podman tag "$SRC" "${{ env.REGISTRY_DOCKERHUB }}/armorred/nginx:poc-cachix-test"
-            podman tag "$SRC" "${{ env.REGISTRY_GHCR }}/armorred/nginx:poc-cachix-test"
-            podman push "${{ env.REGISTRY_DOCKERHUB }}/armorred/nginx:poc-cachix-test"
-            podman push "${{ env.REGISTRY_GHCR }}/armorred/nginx:poc-cachix-test"
-          '
+          set -euo pipefail
+          SRC="armorred/nginx:hardened"
+          podman tag "$SRC" "${{ env.REGISTRY_DOCKERHUB }}/armorred/nginx:poc-cachix-test"
+          podman tag "$SRC" "${{ env.REGISTRY_GHCR }}/armorred/nginx:poc-cachix-test"
+          podman push "${{ env.REGISTRY_DOCKERHUB }}/armorred/nginx:poc-cachix-test"
+          podman push "${{ env.REGISTRY_GHCR }}/armorred/nginx:poc-cachix-test"
 
       - name: Verify pulled-back image runs
         run: |
-          nix shell nixpkgs#podman --command bash -c '
-            set -euo pipefail
-            podman rmi -f armorred/nginx:hardened || true
-            podman pull "${{ env.REGISTRY_GHCR }}/armorred/nginx:poc-cachix-test"
-            podman run --rm "${{ env.REGISTRY_GHCR }}/armorred/nginx:poc-cachix-test" nginx -v
-          '
+          set -euo pipefail
+          podman rmi -f armorred/nginx:hardened || true
+          podman pull "${{ env.REGISTRY_GHCR }}/armorred/nginx:poc-cachix-test"
+          podman run --rm "${{ env.REGISTRY_GHCR }}/armorred/nginx:poc-cachix-test" nginx -v
 
       - name: Summary
         run: |
